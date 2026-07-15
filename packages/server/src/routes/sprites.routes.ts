@@ -12,6 +12,7 @@ import { delimiter, dirname, extname, isAbsolute, join, relative, resolve } from
 import { fileURLToPath } from "url";
 import { promisify } from "util";
 import { DATA_DIR } from "../utils/data-dir.js";
+import { shouldApplySpriteSheetLayout } from "./sprite-layout.js";
 import {
   getBackgroundRemoverStatus,
   tryRemoveBackgroundWithBackgroundRemover,
@@ -526,7 +527,11 @@ function withSpriteSheetLayoutContract(
   plan: SpritePromptPlan,
   options: { reviewedOverride?: boolean } = {},
 ): SpriteCompiledPrompt {
-  if (plan.generateExpressionsIndividually || options.reviewedOverride) return prompt;
+  if (!shouldApplySpriteSheetLayout({
+    cols: plan.cols,
+    rows: plan.rows,
+    generateExpressionsIndividually: plan.generateExpressionsIndividually,
+  }) || options.reviewedOverride) return prompt;
 
   const totalCells = plan.cols * plan.rows;
   const expressionList = plan.expressions.map(formatSpriteLabelForPrompt).join(", ");
