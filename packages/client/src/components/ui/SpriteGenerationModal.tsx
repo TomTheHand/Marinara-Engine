@@ -196,7 +196,10 @@ type SpriteType = "expressions" | "full-body";
 const DEFAULT_SPRITE_PRESET: PresetKey = "6 (2×3)";
 const MATCHED_FULL_BODY_EXPRESSION_LIMIT = 16;
 const MATCHED_FULL_BODY_BATCH_SIZE = 4;
-const SPRITE_GENERATION_REQUEST_TIMEOUT_MS = 305_000;
+// A ComfyUI connection may deliberately generate expression sprites one-at-a-time.
+// Keep this aligned with the server's image/sprite deadline so a healthy local
+// sequence (for example, 16 Flux 9B renders) is not killed by the browser.
+const SPRITE_GENERATION_REQUEST_TIMEOUT_MS = 30 * 60_000;
 const SPRITE_ANIMATED_GENERATION_REQUEST_TIMEOUT_MS = 1_830_000;
 
 const FULL_BODY_POSE_PRESETS: Record<PresetKey, string[]> = {
@@ -415,7 +418,7 @@ async function postSpriteGenerationRequest<T>(
       throw new Error(
         timeoutMs > SPRITE_GENERATION_REQUEST_TIMEOUT_MS
           ? "Animated expression generation timed out. The video provider may still be busy; try again with fewer expressions or a faster video connection."
-          : "Sprite generation timed out after about 5 minutes. The image provider may still be busy; try again or use a faster image connection.",
+          : "Sprite generation timed out after 30 minutes. The image provider may still be busy; try again or use a faster image connection.",
       );
     }
     throw err;

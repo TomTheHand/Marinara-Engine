@@ -116,6 +116,8 @@ const CLIENT_PUBLIC_DIR = resolve(ROUTE_DIR, "../../../client/public");
 const CLIENT_DIST_DIR = resolve(ROUTE_DIR, "../../../client/dist");
 const MAX_SPRITE_GRID_DIMENSION = 8;
 const MAX_INDIVIDUAL_SPRITE_EXPRESSIONS = 8;
+// ComfyUI runs locally and serially here; allow the UI's complete 4×4 preset.
+const MAX_COMFYUI_INDIVIDUAL_SPRITE_EXPRESSIONS = 16;
 const MAX_ANIMATED_SPRITE_EXPRESSIONS = 16;
 const SPRITE_FILE_RE = /\.(png|jpg|jpeg|gif|webp|avif|svg)$/i;
 const CLEANUP_INPUT_FILE_RE = /\.(png|jpg|jpeg|webp|avif)$/i;
@@ -1399,21 +1401,26 @@ async function buildSpritePromptPlan(
   app: FastifyInstance,
   body: SpriteGenerateSheetBody,
   imgModel: string,
+  options: { forceIndividualExpressions?: boolean; maxIndividualExpressions?: number } = {},
 ): Promise<SpritePromptPlan> {
   const cols = coerceSpriteGridDimension(body.cols, 2);
   const rows = coerceSpriteGridDimension(body.rows, 3);
+  const maxIndividualExpressions = Math.max(
+    1,
+    Math.floor(options.maxIndividualExpressions ?? MAX_INDIVIDUAL_SPRITE_EXPRESSIONS),
+  );
   const fullBodyExpressionMode = body.spriteType === "full-body" && body.fullBodyExpressionMode === true;
   let expressions = (body.expressions ?? []).slice(0, cols * rows);
 
   const singlePortrait = body.spriteType !== "full-body" && expressions.length === 1 && cols === 1 && rows === 1;
   const singleFullBody = body.spriteType === "full-body" && expressions.length === 1 && cols === 1 && rows === 1;
   const generateExpressionsIndividually =
-    body.spriteType !== "full-body" &&
     !singlePortrait &&
-    isOpenAIGptImageModel(imgModel) &&
-    !isOpenAIGptImage2Model(imgModel);
-  if (generateExpressionsIndividually && expressions.length > MAX_INDIVIDUAL_SPRITE_EXPRESSIONS) {
-    expressions = expressions.slice(0, MAX_INDIVIDUAL_SPRITE_EXPRESSIONS);
+    !singleFullBody &&
+    (options.forceIndividualExpressions ||
+      (body.spriteType !== "full-body" && isOpenAIGptImageModel(imgModel) && !isOpenAIGptImage2Model(imgModel)));
+  if (generateExpressionsIndividually && expressions.length > maxIndividualExpressions) {
+    expressions = expressions.slice(0, maxIndividualExpressions);
   }
   const expressionList = expressions.join(", ");
   const promptOverridesStorage = createPromptOverridesStorage(app.db);
@@ -1906,9 +1913,16 @@ export async function spritesRoutes(app: FastifyInstance) {
     }
 
     const imgModel = conn.model || "";
+    const useComfyIndividualExpressions =
+      (conn as any).imageService === "comfyui" ||
+      (conn as any).imageGenerationSource === "comfyui" ||
+      !!conn.comfyuiWorkflow;
     const imageDefaults = resolveConnectionImageDefaults(conn);
     const imageSettings = await loadImageGenerationUserSettings(app.db);
-    const plan = await buildSpritePromptPlan(app, body, imgModel);
+    const plan = await buildSpritePromptPlan(app, body, imgModel, {
+      forceIndividualExpressions: useComfyIndividualExpressions,
+      maxIndividualExpressions: useComfyIndividualExpressions ? MAX_COMFYUI_INDIVIDUAL_SPRITE_EXPRESSIONS : undefined,
+    });
     if (plan.expressions.length === 0) {
       return reply.status(400).send({ error: "No expressions remain after applying the requested grid size" });
     }
@@ -1919,10 +1933,18 @@ export async function spritesRoutes(app: FastifyInstance) {
         nativeTransparentPng && shouldUseCleanupFriendlyTransparentPrompt(imgModel);
       const items = await Promise.all(
         plan.expressions.map(async (expression) => {
-          let expressionPrompt = await loadPrompt(plan.promptOverridesStorage, SPRITES_SINGLE_PORTRAIT, {
-            appearance: body.appearance?.trim() || "",
-            expression,
-          });
+          let expressionPrompt: string;
+          if (plan.spriteType === "full-body") {
+            expressionPrompt = await loadPrompt(plan.promptOverridesStorage, SPRITES_SINGLE_FULL_BODY, {
+              appearance: body.appearance?.trim() || "",
+              pose: expression,
+            });
+          } else {
+            expressionPrompt = await loadPrompt(plan.promptOverridesStorage, SPRITES_SINGLE_PORTRAIT, {
+              appearance: body.appearance?.trim() || "",
+              expression,
+            });
+          }
           if (nativeTransparentPng) {
             expressionPrompt = applyNativeTransparentPngPrompt(expressionPrompt, cleanupFriendlyTransparentPrompt);
           }
@@ -2210,12 +2232,17 @@ export async function spritesRoutes(app: FastifyInstance) {
     const imgApiKey = conn.apiKey || "";
     const imgSource = (conn as any).imageGenerationSource || imgModel;
     const imgServiceHint = conn.imageService || imgSource;
+    const useComfyIndividualExpressions =
+      imgServiceHint === "comfyui" || imgSource === "comfyui" || !!conn.comfyuiWorkflow;
     const imageDefaults = resolveConnectionImageDefaults(conn);
     const imageSettings = await loadImageGenerationUserSettings(app.db);
     const nativeTransparentPng = body.nativeTransparentPng === true;
     const cleanupFriendlyTransparentPrompt =
       nativeTransparentPng && shouldUseCleanupFriendlyTransparentPrompt(imgModel);
-    const plan = await buildSpritePromptPlan(app, body, imgModel);
+    const plan = await buildSpritePromptPlan(app, body, imgModel, {
+      forceIndividualExpressions: useComfyIndividualExpressions,
+      maxIndividualExpressions: useComfyIndividualExpressions ? MAX_COMFYUI_INDIVIDUAL_SPRITE_EXPRESSIONS : undefined,
+    });
     if (plan.expressions.length === 0) {
       return reply.status(400).send({ error: "No expressions remain after applying the requested grid size" });
     }
@@ -2255,10 +2282,19 @@ export async function spritesRoutes(app: FastifyInstance) {
 
             for (const expression of plan.expressions) {
               try {
-                let expressionPrompt = await loadPrompt(plan.promptOverridesStorage, SPRITES_SINGLE_PORTRAIT, {
-                  appearance: body.appearance?.trim() || "",
-                  expression,
-                });
+                let expressionPrompt: string;
+                if (plan.spriteType === "full-body") {
+                  expressionPrompt = await loadPrompt(plan.promptOverridesStorage, SPRITES_SINGLE_FULL_BODY, {
+                    appearance: body.appearance?.trim() || "",
+                    pose: expression,
+                  });
+                } else {
+                  expressionPrompt = await loadPrompt(plan.promptOverridesStorage, SPRITES_SINGLE_PORTRAIT, {
+                    appearance: body.appearance?.trim() || "",
+                    expression,
+                  });
+                }
+
                 if (nativeTransparentPng) {
                   expressionPrompt = applyNativeTransparentPngPrompt(
                     expressionPrompt,

@@ -2165,8 +2165,11 @@ const DEFAULT_COMFYUI_WORKFLOW: Record<string, unknown> = {
   },
 };
 
+// 64×64 transparent RGBA PNG — large enough to survive reference preprocessors
+// that downsample before applying 3×3/5×5/7×7 convolution kernels. The old
+// 1×1 placeholder (and even 8×8) could shrink to 2×2 and crash conv layers.
 const COMFYUI_PLACEHOLDER_REFERENCE_BASE64 =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
+  "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAJ0lEQVR42u3BAQ0AAADCoPdPbQ43oAAAAAAAAAAAAAAAAAAAAIB3A0BAAAGveg7oAAAAAElFTkSuQmCC";
 const COMFYUI_MAX_REFERENCE_IMAGES = 4;
 const COMFYUI_OUTPUT_FILE_KEYS = ["gifs", "images"] as const;
 
@@ -2385,21 +2388,32 @@ async function generateComfyUI(baseUrl: string, request: ImageGenRequest): Promi
   }
   const workflowJson = JSON.stringify(workflow);
   const references = collectComfyReferenceImages(request, defaults);
-  for (let i = 0; i < references.length; i++) {
-    const reference = references[i]!;
+
+  // Marinara stores a single ComfyUI workflow per connection, so one workflow
+  // must tolerate 0–4 reference images. Resolve every reference placeholder that
+  // appears in the workflow: real images first, stable 64×64 placeholders for
+  // the remaining slots. Do not rely on a separate no-reference workflow.
+  for (let i = 0; i < COMFYUI_MAX_REFERENCE_IMAGES; i++) {
+    const reference = references[i] ?? COMFYUI_PLACEHOLDER_REFERENCE_BASE64;
     const referenceBase64 = decodeReferenceImage(reference).base64;
     const imagePlaceholder = numberedComfyReferencePlaceholder("reference_image", i);
     const namePlaceholder = numberedComfyReferencePlaceholder("reference_image_name", i);
+    const isFirstSlot = i === 0;
 
-    replacements[imagePlaceholder] = referenceBase64;
-    if (i === 0) replacements["%reference_image%"] = referenceBase64;
+    if (workflowJson.includes(imagePlaceholder)) {
+      replacements[imagePlaceholder] = referenceBase64;
+    }
+    if (isFirstSlot && workflowJson.includes("%reference_image%")) {
+      replacements["%reference_image%"] = referenceBase64;
+    }
 
-    if (workflowJson.includes(namePlaceholder) || (i === 0 && workflowJson.includes("%reference_image_name%"))) {
+    if (workflowJson.includes(namePlaceholder) || (isFirstSlot && workflowJson.includes("%reference_image_name%"))) {
       const uploadedName = await uploadComfyReferenceImage(base, reference, request.signal);
       replacements[namePlaceholder] = uploadedName;
-      if (i === 0) replacements["%reference_image_name%"] = uploadedName;
+      if (isFirstSlot) replacements["%reference_image_name%"] = uploadedName;
     }
   }
+
   const resolvedWorkflow = replaceComfyUiPlaceholders(workflow, replacements);
 
   // Queue the workflow
